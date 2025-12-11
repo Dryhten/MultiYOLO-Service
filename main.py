@@ -9,7 +9,7 @@ from core.logging_config import setup_logging, get_logger
 from services.detection import router as detection_router
 from services.model_manager import get_model_manager
 
-    setup_logging(
+setup_logging(
     log_level=settings.LOG_LEVEL,
     log_dir=settings.LOG_DIR,
     app_name="multi-yolo-service",
