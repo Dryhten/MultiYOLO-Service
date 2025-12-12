@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
-    "torch>=2.0.0", # PyTorch（如果使用 torch-musa，则不需要这个）
+    "torch>=2.0.0",
     "torchvision>=0.15.0",
     "opencv-python>=4.8.0",
     "numpy>=1.24.0",
@@ -17,13 +17,7 @@ dependencies = [
     "loguru>=0.7.0",
     "ultralytics>=8.3.235",
 ]
-# 注意：本项目使用原生 PyTorch 进行推理，支持 torch-musa
-# 1. 如果使用 MUSA GPU，请安装 torch-musa（参考摩尔线程官方文档）
-# 2. 如果使用 CUDA GPU，请安装 torch（带 CUDA 支持）
-# 3. 代码会优先使用 MUSA GPU，如果未检测到 MUSA 则使用 CUDA/MPS/CPU
-# 4. 不再依赖 ultralytics 库，直接使用 PyTorch 加载和推理模型
 
-# PyTorch CUDA 12.6 索引配置
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu126", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
