@@ -5,7 +5,7 @@
 ## ✨ 特性
 
 - 🚀 **高性能推理**：基于原生 PyTorch，支持多种硬件加速
-  - 优先使用 MUSA GPU（摩尔线程）
+  - 使用 MUSA GPU（摩尔线程）
   - 支持 CUDA GPU（NVIDIA）
   - 支持 Apple MPS（暂未测试，欢迎贡献代码）
   - 自动降级到 CPU
