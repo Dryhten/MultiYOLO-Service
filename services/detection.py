@@ -4,6 +4,7 @@ import io
 import threading
 import asyncio
 import json
+import urllib.parse
 from typing import Dict, List, Optional, Any, Union, Tuple
 from collections import defaultdict
 from datetime import datetime
@@ -26,6 +27,7 @@ router = APIRouter()
 
 class DetectionDetail(BaseModel):
     """检测详细信息"""
+
     class_name: str
     class_id: int
     confidence: float
@@ -42,6 +44,7 @@ class DetectionResponse(BaseModel):
 
 class ModelDetectionResult(BaseModel):
     """单个模型的检测结果"""
+
     model_name: str
     detections: Dict[str, int]
     total_objects: int
@@ -51,6 +54,7 @@ class ModelDetectionResult(BaseModel):
 
 class MultiModelDetectionResponse(BaseModel):
     """多模型检测响应"""
+
     results: List[ModelDetectionResult]
 
 
@@ -75,7 +79,7 @@ async def get_device_info(model_name: Optional[str] = None):
     """获取硬件设备信息"""
     try:
         model_manager = get_model_manager()
-        
+
         if model_name:
             detector = model_manager.get_model(model_name)
             if not detector:
@@ -84,7 +88,7 @@ async def get_device_info(model_name: Optional[str] = None):
             detector = model_manager.get_default_model()
             if not detector:
                 raise HTTPException(status_code=500, detail="未找到任何已加载的模型")
-        
+
         return {
             "status": "success",
             "model_name": model_name or "default",
@@ -124,7 +128,7 @@ async def _detect_single_model(
     try:
         detection_results = await detector.detect_async(frame_bgr, conf_threshold=conf_threshold)
         detections, details = _process_detection_results(detection_results)
-        
+
         return ModelDetectionResult(
             model_name=model_name,
             detections=detections,
@@ -146,60 +150,98 @@ async def _detect_single_model(
 @router.post("/detect", response_model=MultiModelDetectionResponse)
 async def detect_objects(
     file: UploadFile = File(..., description="图片文件"),
-    model_names: str = Form(..., description="模型名称数组（JSON格式，支持单个或多个模型，如：[\"model1\"] 或 [\"model1\", \"model2\"]）"),
-    conf_thresholds: Optional[str] = Form(None, description="每个模型的阈值映射（JSON格式，可选，如：{\"model1\": 0.5, \"model2\": 0.6}，未指定的模型使用默认值0.5）"),
+    models: str = Form(
+        ...,
+        description='模型配置对象（JSON格式，键为模型名称，值为阈值，如：{"wound": 0.5, "fireguard": 0.6}）',
+        example='{"wound": 0.5}',
+    ),
 ):
     """
     检测图片中的目标对象
-    
-    统一使用多模型模式，支持传入单个或多个模型：
-    - model_names: JSON数组格式，如 ["model1"] 或 ["model1", "model2"]
-    - conf_thresholds: JSON对象格式，可选，为每个模型指定阈值，如 {"model1": 0.5, "model2": 0.6}
+
+    支持传入单个或多个模型，每个模型可指定阈值：
+    - models: JSON对象格式，键为模型名称，值为阈值，如：{"wound": 0.5, "fireguard": 0.6}
+    - 阈值范围 0-1，如果未指定阈值则使用默认值 0.5
     - 返回 MultiModelDetectionResponse，包含每个模型的检测结果
     """
     try:
         if not file.content_type or not file.content_type.startswith("image/"):
             raise HTTPException(status_code=400, detail="文件必须是图片格式")
 
-        # 解析模型名称列表
+        # 解析模型配置对象
+        default_threshold = 0.5
+        model_names_list = []
+        thresholds_dict: Dict[str, float] = {}
+
         try:
-            model_names_list = json.loads(model_names)
-            if not isinstance(model_names_list, list):
-                raise ValueError("model_names 必须是JSON数组格式")
-            if len(model_names_list) == 0:
-                raise ValueError("model_names 数组不能为空")
-            # 验证数组元素都是字符串
-            if not all(isinstance(name, str) for name in model_names_list):
-                raise ValueError("model_names 数组中的元素必须是字符串")
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="model_names 必须是有效的JSON数组格式")
+            # 记录接收到的原始值（用于调试）
+            logger.debug(f"接收到的 models 原始值: {repr(models)}")
+
+            # 尝试处理可能的 URL 编码或转义问题
+            try:
+                decoded = urllib.parse.unquote(models)
+                if decoded != models:
+                    logger.debug(f"检测到 URL 编码，解码后: {repr(decoded)}")
+                    models = decoded
+            except Exception:
+                pass
+
+            # 尝试处理可能的单引号格式（兼容处理）
+            try:
+                models_dict = json.loads(models)
+            except json.JSONDecodeError:
+                # 尝试将单引号转换为双引号
+                try:
+                    normalized = models.replace("'", '"')
+                    models_dict = json.loads(normalized)
+                    logger.debug(f"通过单引号转换成功解析: {repr(normalized)}")
+                except json.JSONDecodeError:
+                    raise
+
+            if not isinstance(models_dict, dict):
+                raise ValueError("models 必须是JSON对象格式")
+            if len(models_dict) == 0:
+                raise ValueError("models 对象不能为空")
+
+            # 解析每个模型配置
+            for model_name, threshold in models_dict.items():
+                # 验证模型名称
+                if not isinstance(model_name, str):
+                    raise ValueError("模型名称必须是字符串")
+
+                # 验证阈值
+                if threshold is None:
+                    threshold = default_threshold
+                elif not isinstance(threshold, (int, float)):
+                    raise ValueError(f"阈值必须是数字，但 '{model_name}' 的值为 {type(threshold).__name__}")
+                elif not (0 <= threshold <= 1):
+                    raise ValueError(f"阈值必须在0-1之间，但 '{model_name}' 的值为 {threshold}")
+
+                model_names_list.append(model_name)
+                thresholds_dict[model_name] = float(threshold)
+
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"JSON解析失败，接收到的值: {repr(models)}, 类型: {type(models)}, 长度: {len(models)}, 错误: {str(e)}"
+            )
+            suggestion = ""
+            if "{" not in models and "}" not in models:
+                suggestion = '提示：输入应该包含花括号，例如: {"wound": 0.5}'
+            elif "'" in models and '"' not in models:
+                suggestion = "提示：JSON格式要求使用双引号，不能使用单引号。请将单引号改为双引号。"
+
+            raise HTTPException(
+                status_code=400,
+                detail=f'models 必须是有效的JSON对象格式。接收到的值: {repr(models)}。{suggestion} 正确格式示例: {{"wound": 0.5}} 或 {{"wound": 0.5, "fireguard": 0.6}}',
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-
-        # 解析阈值配置
-        thresholds_dict: Dict[str, float] = {}
-        default_threshold = 0.5
-        if conf_thresholds:
-            try:
-                thresholds_dict = json.loads(conf_thresholds)
-                if not isinstance(thresholds_dict, dict):
-                    raise ValueError("conf_thresholds 必须是JSON对象格式")
-                # 验证阈值都是数字
-                for key, value in thresholds_dict.items():
-                    if not isinstance(value, (int, float)):
-                        raise ValueError(f"conf_thresholds 中的阈值必须是数字，但 '{key}' 的值为 {type(value).__name__}")
-                    if not (0 <= value <= 1):
-                        raise ValueError(f"conf_thresholds 中的阈值必须在0-1之间，但 '{key}' 的值为 {value}")
-            except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail="conf_thresholds 必须是有效的JSON对象格式")
-            except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e))
 
         # 读取和预处理图片
         image_data = await file.read()
         pil_image = Image.open(io.BytesIO(image_data))
         frame_rgb = np.array(pil_image)
-        
+
         if len(frame_rgb.shape) == 2:
             frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_GRAY2RGB)
         elif frame_rgb.shape[2] == 4:
@@ -212,8 +254,7 @@ async def detect_objects(
         invalid_models = [name for name in model_names_list if name not in available_models]
         if invalid_models:
             raise HTTPException(
-                status_code=404,
-                detail=f"以下模型不存在: {invalid_models}。可用模型: {available_models}"
+                status_code=404, detail=f"以下模型不存在: {invalid_models}。可用模型: {available_models}"
             )
 
         # 为每个模型准备检测任务
@@ -222,12 +263,10 @@ async def detect_objects(
             detector = model_manager.get_model(model_name_item)
             if not detector:
                 continue  # 理论上不会到这里，因为已经验证过了
-            
-            # 获取该模型的阈值，优先使用conf_thresholds中的配置，否则使用默认值
+
+            # 获取该模型的阈值
             model_threshold = thresholds_dict.get(model_name_item, default_threshold)
-            detection_tasks.append(
-                _detect_single_model(detector, model_name_item, frame_bgr, model_threshold)
-            )
+            detection_tasks.append(_detect_single_model(detector, model_name_item, frame_bgr, model_threshold))
 
         # 并行执行所有模型的检测
         results = await asyncio.gather(*detection_tasks)
@@ -237,6 +276,7 @@ async def detect_objects(
 
         # 保存图片（如果启用）
         if settings.SAVE_TMP_ENABLED:
+
             async def save_image_async():
                 try:
                     save_dir = Path(settings.SAVE_TMP_DIR)
@@ -246,23 +286,25 @@ async def detect_objects(
                     save_path = save_dir / save_filename
 
                     loop = asyncio.get_event_loop()
-                    
+
                     def write_file():
                         save_dir.mkdir(parents=True, exist_ok=True)
                         with open(save_path, "wb") as f:
                             f.write(image_data)
-                    
+
                     await loop.run_in_executor(None, write_file)
 
                     total_objects = sum(r.total_objects for r in results)
                     model_count = len(results)
                     if total_objects > 0:
-                        logger.info(f"图片已保存到临时目录: {save_path} ({model_count}个模型检测，共检测到 {total_objects} 个对象)")
+                        logger.info(
+                            f"图片已保存到临时目录: {save_path} ({model_count}个模型检测，共检测到 {total_objects} 个对象)"
+                        )
                     else:
                         logger.info(f"图片已保存到临时目录: {save_path} ({model_count}个模型检测，未检测到目标)")
                 except Exception as e:
                     logger.warning(f"保存图片到临时目录失败: {str(e)}")
-            
+
             asyncio.create_task(save_image_async())
 
         # 记录日志

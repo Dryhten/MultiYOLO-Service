@@ -334,23 +334,35 @@ Content-Type: multipart/form-data
 
 请求参数：
 - `file`: 图片文件（multipart/form-data，必填）
-- `model_name`: 模型名称（必填），使用 `/api/v1/models` 获取可用模型列表
-- `conf_threshold`: 检测阈值（可选），范围 0-1，默认值 0.5
+- `models`: 模型配置对象（JSON格式，必填），键为模型名称，值为阈值，例如：
+  ```json
+  {
+    "wound": 0.5,
+    "fireguard": 0.6
+  }
+  ```
+  阈值范围 0-1，如果未指定阈值则使用默认值 0.5。使用 `/api/v1/models` 获取可用模型列表。
 
 响应：
 ```json
 {
-  "detections": {
-    "car": 2,
-    "person": 1
-  },
-  "total_objects": 3,
-  "details": [
+  "results": [
     {
-      "class_name": "car",
-      "class_id": 1,
-      "confidence": 0.95,
-      "bbox": [100.5, 200.3, 300.7, 400.9]
+      "model_name": "model1",
+      "detections": {
+        "car": 2,
+        "person": 1
+      },
+      "total_objects": 3,
+      "details": [
+        {
+          "class_name": "car",
+          "class_id": 1,
+          "confidence": 0.95,
+          "bbox": [100.5, 200.3, 300.7, 400.9]
+        }
+      ],
+      "error": null
     }
   ]
 }
@@ -364,38 +376,54 @@ Content-Type: multipart/form-data
 # 获取模型列表
 curl http://localhost:8003/api/v1/models
 
-# 执行检测（指定阈值）
+# 执行检测（单个模型，指定阈值）
 curl -X POST "http://localhost:8003/api/v1/detect" \
   -F "file=@image.jpg" \
-  -F "model_name=model1" \
-  -F "conf_threshold=0.6"
+  -F 'models={"wound": 0.6}'
 
-# 执行检测（使用默认阈值0.5）
+# 执行检测（单个模型，使用默认阈值0.5）
 curl -X POST "http://localhost:8003/api/v1/detect" \
   -F "file=@image.jpg" \
-  -F "model_name=model1"
+  -F 'models={"wound": 0.5}'
+
+# 执行检测（多个模型，不同阈值）
+curl -X POST "http://localhost:8003/api/v1/detect" \
+  -F "file=@image.jpg" \
+  -F 'models={"wound": 0.5, "fireguard": 0.6}'
 ```
 
 **使用 Python：**
 
 ```python
 import requests
+import json
 
 # 获取模型列表
 response = requests.get("http://localhost:8003/api/v1/models")
 models = response.json()["models"]
 print(f"可用模型: {models}")
 
-# 执行检测
+# 执行检测（单个模型）
 url = "http://localhost:8003/api/v1/detect"
 files = {"file": open("image.jpg", "rb")}
 data = {
-    "model_name": models[0],  # 使用第一个可用模型
-    "conf_threshold": 0.5
+    "models": json.dumps({models[0]: 0.5})  # 使用第一个可用模型，阈值0.5
 }
 response = requests.post(url, files=files, data=data)
 result = response.json()
-print(f"检测到 {result['total_objects']} 个对象")
+print(f"检测结果: {result}")
+
+# 执行检测（多个模型）
+data = {
+    "models": json.dumps({
+        "wound": 0.5,
+        "fireguard": 0.6
+    })
+}
+response = requests.post(url, files=files, data=data)
+result = response.json()
+for model_result in result["results"]:
+    print(f"模型 {model_result['model_name']}: 检测到 {model_result['total_objects']} 个对象")
 ```
 
 **详细 API 文档请查看：[API_DOCUMENTATION.md](./API_DOCUMENTATION.md)**
